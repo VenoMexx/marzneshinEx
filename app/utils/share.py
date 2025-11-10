@@ -1,14 +1,17 @@
 import base64
+import copy
 import ipaddress
 import json
 import random
 import secrets
+import logging
 from collections import defaultdict
 from datetime import datetime as dt, timedelta
 from importlib import resources
 from typing import Literal, Union, List, Type
 from uuid import UUID
 
+import yaml
 from jdatetime import date as jd
 from v2share import (
     V2Data,
@@ -98,6 +101,8 @@ def generate_subscription(
     use_placeholder: bool = False,
     placeholder_remark: str = "disabled",
     shuffle: bool = False,
+    include_cdn_configs: bool = False,
+    apply_routing_rules: bool = False,
 ) -> str:
     extra_data = UserResponse.model_validate(user).model_dump(
         exclude={"subscription_url", "services", "inbounds"}
@@ -133,8 +138,17 @@ def generate_subscription(
             chaining_support=subscription_handler.chaining_support,
         )
 
+        # Add CDN configs if enabled
+        if include_cdn_configs:
+            cdn_configs = generate_cdn_configs(configs, user.id)
+            configs.extend(cdn_configs)
+
     subscription_handler.add_proxies(configs)
     config = subscription_handler.render(sort=True, shuffle=shuffle)
+
+    # Apply smart proxy routing rules if enabled
+    if apply_routing_rules and config_format in ["clash", "clash-meta", "xray", "sing-box"]:
+        config = apply_smart_proxy_routing(config, config_format)
 
     return (
         config if not as_base64 else base64.b64encode(config.encode()).decode()
@@ -236,6 +250,103 @@ def setup_format_variables(extra_data: dict) -> dict:
     return format_variables
 
 
+# DoH settings cache (5 minute TTL)
+_doh_cache = {
+    "data": None,
+    "expires_at": dt.min,
+    "last_error": None
+}
+DOH_CACHE_TTL_MINUTES = 5
+logger = logging.getLogger(__name__)
+
+
+def get_doh_dns_servers() -> tuple[list[str], list[str]]:
+    """
+    Get DNS over HTTPS servers from settings with caching.
+
+    Cache TTL: 5 minutes
+    Returns cached result if available and not expired.
+
+    Returns:
+        Tuple of (doh_servers, fallback_dns)
+    """
+    from app.db import GetDB
+    from app.db.models import Settings
+    from app.models.settings import DoHSettings
+
+    now = dt.now()
+
+    # Return cached data if valid
+    if _doh_cache["data"] and _doh_cache["expires_at"] > now:
+        return _doh_cache["data"]
+
+    try:
+        with GetDB() as db:
+            settings_row = db.query(Settings.doh).first()
+            if not settings_row or not settings_row[0]:
+                result = ([], [])
+            else:
+                doh_settings = DoHSettings.model_validate(settings_row[0])
+                if not doh_settings.enabled:
+                    result = ([], [])
+                else:
+                    result = (doh_settings.servers, doh_settings.fallback_dns)
+
+        # Cache successful result
+        _doh_cache["data"] = result
+        _doh_cache["expires_at"] = now + timedelta(minutes=DOH_CACHE_TTL_MINUTES)
+        _doh_cache["last_error"] = None
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to fetch DoH settings: {e}")
+
+        # Return last successful cache if available (stale cache fallback)
+        if _doh_cache["data"]:
+            logger.warning("Using stale DoH cache due to database error")
+            return _doh_cache["data"]
+
+        # No cache available, return empty
+        _doh_cache["last_error"] = str(e)
+        return ([], [])
+
+
+def _get_effective_dns_servers(host) -> list[str]:
+    """
+    Determine which DNS servers to use for a host.
+
+    Priority:
+    1. Host-specific DNS servers (if configured)
+    2. DoH servers (if enabled in settings)
+    3. DoH fallback DNS (if DoH enabled but servers empty)
+    4. Empty list (use client default)
+
+    Args:
+        host: InboundHost object
+
+    Returns:
+        List of DNS server addresses (IP or DoH URL)
+    """
+    # Check if host has specific DNS servers configured
+    if host.dns_servers:
+        return host.dns_servers.split(",")
+
+    # Try to get DoH settings
+    doh_servers, fallback_dns = get_doh_dns_servers()
+
+    # If DoH is enabled and has servers, use them
+    if doh_servers:
+        # Combine DoH servers with fallback DNS for redundancy
+        return doh_servers + fallback_dns
+
+    # If DoH enabled but no servers, use fallback DNS only
+    if fallback_dns:
+        return fallback_dns
+
+    # No DNS configured, return empty list (client will use defaults)
+    return []
+
+
 def generate_user_configs(
     inbounds: list,
     key: str,
@@ -253,12 +364,43 @@ def generate_user_configs(
         chained_hosts = [c.chained_host for c in host.chain]
         if chained_hosts and not chaining_support:
             continue
-        data = create_config(
-            host, key, format_variables, salt, user_id, chained_hosts
-        )
-        configs.append(data)
+
+        # Check if separate upload/download domains are configured
+        if host.upload_host and host.download_host:
+            # Generate upload-optimized config
+            upload_host = _create_host_variant(host, host.upload_host, " (Upload)")
+            upload_data = create_config(
+                upload_host, key, format_variables, salt, user_id, chained_hosts
+            )
+            configs.append(upload_data)
+
+            # Generate download-optimized config
+            download_host = _create_host_variant(host, host.download_host, " (Download)")
+            download_data = create_config(
+                download_host, key, format_variables, salt, user_id, chained_hosts
+            )
+            configs.append(download_data)
+        else:
+            # Standard config generation
+            data = create_config(
+                host, key, format_variables, salt, user_id, chained_hosts
+            )
+            configs.append(data)
 
     return configs
+
+
+def _create_host_variant(original_host, host_value: str, remark_suffix: str):
+    """
+    Create a temporary host variant with modified host and remark.
+    Used for generating separate upload/download configs.
+    Uses deep copy to prevent memory leaks from shared references.
+    """
+    # Deep copy to avoid memory leaks from shared nested objects
+    variant = copy.deepcopy(original_host)
+    variant.host = host_value
+    variant.remark = original_host.remark + remark_suffix
+    return variant
 
 
 def create_config(
@@ -344,7 +486,7 @@ def create_config(
             inbound.get("address"), user_id
         ),
         flow=host.flow or inbound.get("flow"),
-        dns_servers=(host.dns_servers.split(",") if host.dns_servers else []),
+        dns_servers=_get_effective_dns_servers(host),
         mtu=host.mtu,
         allowed_ips=(
             list(map(str.strip, host.allowed_ips.split(",")))
@@ -425,3 +567,187 @@ def create_config(
 
 def encode_title(text: str) -> str:
     return f"base64:{base64.b64encode(text.encode()).decode()}"
+
+
+def apply_smart_proxy_routing(config: str, config_format: str) -> str:
+    """
+    Apply smart proxy routing rules to subscription config
+    """
+    try:
+        from app.db import GetDB
+        from app.db.models import Settings
+        from app.models.settings import SubscriptionSettings
+        from app.models.proxy_mode import ProxyModeSettings
+        from app.utils.routing import generate_clash_rules, generate_xray_routing, generate_singbox_routing
+        import yaml
+
+        # Get settings from database
+        with GetDB() as db:
+            settings_row = db.query(Settings.subscription, Settings.proxy_mode).first()
+            if not settings_row:
+                return config
+
+            sub_settings = SubscriptionSettings.model_validate(settings_row[0])
+            proxy_mode_settings_data = settings_row[1]
+
+            # Check if proxy mode is enabled
+            if not sub_settings.proxy_mode_enabled:
+                return config
+
+            # Get proxy mode settings
+            if not proxy_mode_settings_data:
+                proxy_mode_settings = ProxyModeSettings()
+            else:
+                proxy_mode_settings = ProxyModeSettings.model_validate(proxy_mode_settings_data)
+
+        proxy_mode = sub_settings.default_proxy_mode
+
+        # Apply routing based on format
+        if config_format in ["clash", "clash-meta"]:
+            # Parse YAML
+            config_dict = yaml.safe_load(config)
+
+            # Add routing rules
+            clash_rules = generate_clash_rules(proxy_mode, proxy_mode_settings)
+            config_dict["rules"] = clash_rules
+
+            # Convert back to YAML
+            return yaml.dump(config_dict, allow_unicode=True, default_flow_style=False)
+
+        elif config_format == "xray":
+            # Parse JSON
+            config_dict = json.loads(config)
+
+            # Add routing
+            routing = generate_xray_routing(proxy_mode, proxy_mode_settings)
+            config_dict["routing"] = routing
+
+            # Add direct and block outbounds if needed
+            if "outbounds" not in config_dict:
+                config_dict["outbounds"] = []
+
+            outbound_tags = [o.get("tag") for o in config_dict["outbounds"]]
+            if "direct" not in outbound_tags:
+                config_dict["outbounds"].append({
+                    "protocol": "freedom",
+                    "tag": "direct"
+                })
+            if "block" not in outbound_tags:
+                config_dict["outbounds"].append({
+                    "protocol": "blackhole",
+                    "tag": "block"
+                })
+
+            # Convert back to JSON
+            return json.dumps(config_dict, indent=2)
+
+        elif config_format == "sing-box":
+            # Parse JSON
+            config_dict = json.loads(config)
+
+            # Add routing
+            routing = generate_singbox_routing(proxy_mode, proxy_mode_settings)
+            config_dict["route"] = routing
+
+            # Add direct and block outbounds if needed
+            if "outbounds" not in config_dict:
+                config_dict["outbounds"] = []
+
+            outbound_tags = [o.get("tag") for o in config_dict["outbounds"]]
+            if "direct" not in outbound_tags:
+                config_dict["outbounds"].append({
+                    "type": "direct",
+                    "tag": "direct"
+                })
+            if "block" not in outbound_tags:
+                config_dict["outbounds"].append({
+                    "type": "block",
+                    "tag": "block"
+                })
+
+            # Convert back to JSON
+            return json.dumps(config_dict, indent=2)
+
+    except Exception as e:
+        # Log error but don't fail subscription generation
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to apply smart proxy routing: {e}")
+        return config
+
+    return config
+
+
+def generate_cdn_configs(original_configs: list, user_id: int) -> list:
+    """
+    Generate CDN-optimized configurations from original configs
+    Only generates CDN configs for WebSocket-based protocols
+    """
+    from app.db import GetDB
+    from app.db.models import Settings
+    from app.models.settings import CloudflareSettings
+
+    cdn_configs = []
+
+    try:
+        # Get Cloudflare settings from database
+        with GetDB() as db:
+            settings_row = db.query(Settings.cloudflare).first()
+            if not settings_row or not settings_row[0]:
+                return cdn_configs
+
+            cf_settings = CloudflareSettings.model_validate(settings_row[0])
+
+        # Check if CDN is enabled
+        if not cf_settings.enabled or not cf_settings.auto_cdn_ip:
+            return cdn_configs
+
+        # Get CDN IPs
+        cdn_ips = cf_settings.preferred_ips[:5] if cf_settings.preferred_ips else []
+        cdn_ports = cf_settings.cdn_ports[:6]  # Use first 6 CDN-compatible ports
+
+        if not cdn_ips:
+            # Use default Cloudflare CDN IPs if no preferred IPs configured
+            cdn_ips = [
+                "104.16.0.0",
+                "104.17.0.0",
+                "172.67.0.0",
+            ]
+
+        # Generate CDN configs for WebSocket-based protocols
+        for config in original_configs:
+            transport_type = getattr(config, "transport_type", None)
+
+            # Only create CDN configs for WebSocket-based transports
+            if transport_type in ["ws", "httpupgrade", "splithttp"]:
+                for cdn_ip in cdn_ips[:2]:  # Use top 2 CDN IPs
+                    for port in cdn_ports[:3]:  # Use top 3 ports
+                        # Create a copy of the config
+                        cdn_config = V2Data(
+                            config.protocol,
+                            f"{config.remark} [CDN]",
+                            cdn_ip,
+                            port,
+                            transport_type=transport_type,
+                            sni=config.sni,
+                            host=config.host,
+                            tls=config.tls or "tls",  # Ensure TLS for CDN
+                            header_type=config.header_type,
+                            alpn=config.alpn,
+                            path=config.path,
+                            fingerprint=config.fingerprint,
+                            uuid=config.uuid,
+                            password=config.password,
+                            flow=config.flow,
+                            allow_insecure=config.allow_insecure,
+                        )
+
+                        cdn_configs.append(cdn_config)
+
+    except Exception as e:
+        # Log error but don't fail subscription generation
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to generate CDN configs: {e}")
+
+    return cdn_configs

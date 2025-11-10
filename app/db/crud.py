@@ -225,6 +225,8 @@ def add_host(db: Session, inbound: Inbound | None, host: InboundHostModify):
         path=host.path,
         sni=host.sni,
         host=host.host,
+        upload_host=host.upload_host,
+        download_host=host.download_host,
         security=host.security,
         alpn=host.alpn.value,
         fingerprint=host.fingerprint,
@@ -286,6 +288,8 @@ def update_host(db: Session, db_host: InboundHost, host: InboundHostModify):
     db_host.path = host.path
     db_host.sni = host.sni
     db_host.host = host.host
+    db_host.upload_host = host.upload_host
+    db_host.download_host = host.download_host
     db_host.security = host.security
     db_host.alpn = host.alpn.value
     db_host.fingerprint = host.fingerprint

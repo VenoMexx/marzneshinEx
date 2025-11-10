@@ -29,6 +29,11 @@ from app.models.user import (
     UserResponse,
     UserUsageSeriesResponse,
 )
+from app.models.bulk_operations import (
+    BulkUserOperation,
+    BulkOperationResponse,
+)
+from app.utils.bulk_operations import execute_bulk_operation
 from app.notification import notify
 
 logger = logging.getLogger(__name__)
@@ -489,3 +494,83 @@ def set_owner(
     )
 
     return user
+
+
+@router.post("/bulk-operation", response_model=BulkOperationResponse)
+def bulk_user_operation(
+    operation_request: BulkUserOperation,
+    db: DBDep,
+    admin: SudoAdminDep,
+):
+    """
+    Perform bulk operations on multiple users
+
+    This endpoint allows administrators to perform various operations
+    on multiple users simultaneously.
+
+    **Supported Operations:**
+    - `delete`: Delete users
+    - `activate`: Activate users
+    - `deactivate`: Deactivate users
+    - `reset_traffic`: Reset used traffic to zero
+    - `reset_days`: Reset expiry date to N days from now
+    - `extend_days`: Extend expiry date by N days
+    - `add_traffic`: Add traffic quota (in GB)
+    - `set_traffic_limit`: Set traffic limit (in GB)
+
+    **Examples:**
+
+    Activate multiple users:
+    ```json
+    {
+        "usernames": ["user1", "user2", "user3"],
+        "operation": "activate"
+    }
+    ```
+
+    Extend expiry by 30 days:
+    ```json
+    {
+        "usernames": ["user1", "user2"],
+        "operation": "extend_days",
+        "days": 30
+    }
+    ```
+
+    Add 10 GB traffic:
+    ```json
+    {
+        "usernames": ["user3", "user4"],
+        "operation": "add_traffic",
+        "traffic_gb": 10.0
+    }
+    ```
+
+    **Response:**
+    Returns operation summary with individual results for each user,
+    including success/failure status and detailed messages.
+    """
+    try:
+        response = execute_bulk_operation(
+            db=db,
+            operation=operation_request.operation,
+            usernames=operation_request.usernames,
+            days=operation_request.days,
+            traffic_gb=operation_request.traffic_gb,
+        )
+
+        logger.info(
+            f"Bulk operation '{operation_request.operation}' by admin '{admin.username}': "
+            f"{response.successful}/{response.total} successful"
+        )
+
+        return response
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Bulk operation failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Bulk operation failed: {str(e)}"
+        )

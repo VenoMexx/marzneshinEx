@@ -1,3 +1,4 @@
+import secrets
 from enum import Enum
 
 from decouple import config
@@ -53,6 +54,21 @@ TELEGRAM_LOGGER_CHANNEL_ID = config(
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = config(
     "JWT_ACCESS_TOKEN_EXPIRE_MINUTES", cast=int, default=1440
 )
+
+# JWT Secret Key for signing tokens
+# IMPORTANT: Set JWT_SECRET_KEY in .env for production!
+# Generate with: python -c "import secrets; print(secrets.token_urlsafe(64))"
+_default_jwt_secret = secrets.token_urlsafe(64)
+JWT_SECRET_KEY = config("JWT_SECRET_KEY", default=_default_jwt_secret)
+
+# Warn if using default generated key (not secure for production)
+if config("JWT_SECRET_KEY", default=None) is None:
+    import logging
+    logging.getLogger(__name__).warning(
+        "⚠️  JWT_SECRET_KEY not set in environment! Using generated key. "
+        "For production, set JWT_SECRET_KEY in .env file. "
+        "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+    )
 
 CUSTOM_TEMPLATES_DIRECTORY = config("CUSTOM_TEMPLATES_DIRECTORY", default=None)
 
@@ -118,4 +134,7 @@ TASKS_EXPIRE_DAYS_REACHED_INTERVAL = config(
 )
 TASKS_RESET_USER_DATA_USAGE = config(
     "TASKS_RESET_USER_DATA_USAGE", default=3600, cast=int
+)
+TASKS_AUTO_BACKUP_INTERVAL = config(
+    "TASKS_AUTO_BACKUP_INTERVAL", default=21600, cast=int  # 6 hours default
 )

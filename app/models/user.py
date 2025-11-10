@@ -62,6 +62,7 @@ class User(BaseModel):
     sub_updated_at: datetime | None = Field(None)
     sub_last_user_agent: str | None = Field(None)
     online_at: datetime | None = Field(None)
+    telegram_id: int | None = Field(None, description="Telegram user ID for bot integration")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -147,6 +148,7 @@ class UserResponse(User):
     subscription_url: str
     owner_username: str | None
     traffic_reset_at: datetime | None
+    telegram_id: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

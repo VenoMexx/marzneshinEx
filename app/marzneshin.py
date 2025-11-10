@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -26,6 +27,7 @@ from app.config.env import (
     TASKS_REVIEW_USERS_INTERVAL,
     TASKS_EXPIRE_DAYS_REACHED_INTERVAL,
     TASKS_RESET_USER_DATA_USAGE,
+    TASKS_AUTO_BACKUP_INTERVAL,
 )
 from app.templates import render_template
 from . import __version__
@@ -37,7 +39,9 @@ from .tasks import (
     review_users,
     expire_days_reached,
 )
+from .tasks.backup import create_auto_backup
 from .webhooks import webhooks_router
+from .telegram.runner import start_telegram_bot, stop_telegram_bot
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +49,23 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await nodes_startup()
+
+    # Start Telegram bot as background task
+    bot_task = asyncio.create_task(start_telegram_bot())
+    logger.info("Telegram bot task started")
+
     yield
+
+    # Shutdown
     scheduler.shutdown()
+
+    # Stop Telegram bot
+    try:
+        await stop_telegram_bot()
+        bot_task.cancel()
+        logger.info("Telegram bot stopped")
+    except Exception as e:
+        logger.error(f"Error stopping Telegram bot: {e}")
 
 
 app = FastAPI(
@@ -103,6 +122,13 @@ scheduler.add_job(
     "interval",
     seconds=TASKS_RESET_USER_DATA_USAGE,
     coalesce=True,
+)
+scheduler.add_job(
+    create_auto_backup,
+    "interval",
+    seconds=TASKS_AUTO_BACKUP_INTERVAL,
+    coalesce=True,
+    max_instances=1,
 )
 
 

@@ -124,6 +124,8 @@ class InboundHost(BaseModel):
     port: int | None = Field(None)
     sni: str | None = Field(None)
     host: str | None = Field(None)
+    upload_host: str | None = Field(None, description="Separate domain for upload traffic")
+    download_host: str | None = Field(None, description="Separate domain for download traffic")
     path: str | None = Field(None)
     security: InboundHostSecurity = InboundHostSecurity.inbound_default
     alpn: InboundHostALPN = InboundHostALPN.none

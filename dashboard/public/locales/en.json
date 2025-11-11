@@ -284,6 +284,17 @@
       "allowed-ips": "Allowed Ips",
       "allowed-ips-placeholder": "127.0.0.1,...",
       "camouflage-settings": "Camouflage Settings",
+      "weight": {
+        "description": "Higher weight = higher priority in subscriptions",
+        "tooltip": {
+          "title": "Subscription Priority",
+          "description": "Controls the order of hosts in subscription links. Higher weight values appear first. Useful for prioritizing faster or more reliable servers.",
+          "examples": "Examples",
+          "high": "First in list (premium servers)",
+          "medium": "Middle of list (standard servers)",
+          "low": "Last in list (backup servers)"
+        }
+      },
       "fragment": {
         "interval": "Interval",
         "length": "Length",

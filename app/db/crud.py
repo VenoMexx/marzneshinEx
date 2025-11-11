@@ -196,7 +196,7 @@ def get_hosts_for_user(session, user_id):
                 ),
             ),
         )
-    )
+    ).order_by(InboundHost.weight.desc())
 
     return result_query.all()
 

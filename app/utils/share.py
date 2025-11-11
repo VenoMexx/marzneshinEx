@@ -422,6 +422,14 @@ def create_config(
             UUID(host.uuid) if host.uuid else None
         ), host.password
 
+    # Extract node-specific information for template variables
+    if host.inbound and host.inbound.node:
+        node_address = host.inbound.node.address or SERVER_IP
+        node_name = host.inbound.node.name or "Unknown"
+    else:
+        node_address = SERVER_IP  # Fallback to master IP
+        node_name = "Master"
+
     format_variables.update(
         {
             "PROTOCOL": (
@@ -432,6 +440,12 @@ def create_config(
         }
     )
     format_variables.update({"TRANSPORT": network or "<missing>"})
+
+    # Add node-specific template variables for multi-node deployments
+    format_variables.update({
+        "NODE_ADDRESS": node_address,  # Node-specific IP (e.g., de1.example.com, de2.example.com)
+        "NODE_NAME": node_name,        # Node name (e.g., DE1, DE2, FI1)
+    })
 
     host_snis = host.sni.split(",") if host.sni else []
     sni_list = host_snis or inbound.get("sni", [])

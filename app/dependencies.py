@@ -12,15 +12,27 @@ from app.utils.auth import get_admin_payload
 
 
 def get_db():
-    """FastAPI dependency for database session with guaranteed cleanup"""
+    """
+    FastAPI dependency for database session with guaranteed cleanup.
+
+    Note: This does NOT auto-commit. Caller must explicitly commit.
+    This prevents unnecessary commits on read-only operations and
+    avoids SQLite lock issues.
+    """
     db = SessionLocal()
     try:
         yield db
-        db.commit()  # Commit on success
+        # No auto-commit - caller controls transaction lifecycle
     except Exception:
         db.rollback()  # Rollback on error
         raise
     finally:
+        # Ensure any uncommitted transaction is rolled back
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        # Clean up session
         db.expire_all()  # Expire all cached objects
         db.close()  # Always close the session
 

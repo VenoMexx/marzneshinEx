@@ -18,7 +18,6 @@ if IS_SQLITE:
         connect_args={
             "check_same_thread": False,
             "timeout": 30,  # 30 second timeout for busy database
-            "isolation_level": None,  # Autocommit mode
         },
         poolclass=NullPool,  # No connection pooling - prevents leaks completely
         pool_pre_ping=False,  # Not needed with NullPool
@@ -36,11 +35,26 @@ if IS_SQLITE:
         cursor.execute("PRAGMA temp_store=MEMORY")  # Keep temp tables in memory
         cursor.close()
 
-    # Connection close event for cleanup
+    # Connection checkout event - ensure clean state
+    @event.listens_for(engine, "checkout")
+    def receive_checkout(dbapi_conn, connection_record, connection_proxy):
+        """Ensure connection is in clean state on checkout"""
+        cursor = dbapi_conn.cursor()
+        # Rollback any pending transactions
+        cursor.execute("ROLLBACK")
+        cursor.close()
+
+    # Connection close event - ensure proper disposal
     @event.listens_for(engine, "close")
     def receive_close(dbapi_conn, connection_record):
-        """Ensure connection is properly closed"""
-        pass
+        """Ensure connection is properly closed and locks released"""
+        try:
+            cursor = dbapi_conn.cursor()
+            # Rollback any uncommitted transactions before close
+            cursor.execute("ROLLBACK")
+            cursor.close()
+        except Exception:
+            pass
 else:
     engine = create_engine(
         SQLALCHEMY_DATABASE_URL,
@@ -52,3 +66,12 @@ else:
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+def dispose_engine():
+    """
+    Dispose of the engine's connection pool.
+    This ensures all connections are closed and resources are freed.
+    Should be called on application shutdown.
+    """
+    engine.dispose()

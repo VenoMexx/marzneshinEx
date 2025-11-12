@@ -5,6 +5,7 @@ services:
     env_file: .env
     volumes:
       - /var/lib/marzneshin:/var/lib/marzneshin
+      - ./app/templates:/app/app/templates
 
   marznode:
     image: dawsh/marznode:latest

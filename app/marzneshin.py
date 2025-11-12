@@ -67,6 +67,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"Error stopping Telegram bot: {e}")
 
+    # Dispose database engine to close all connections
+    try:
+        from app.db.base import dispose_engine
+        dispose_engine()
+        logger.info("Database connections closed")
+    except Exception as e:
+        logger.error(f"Error disposing database engine: {e}")
+
 
 app = FastAPI(
     title="MarzneshinAPI",

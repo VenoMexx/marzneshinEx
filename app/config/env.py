@@ -9,7 +9,7 @@ load_dotenv()
 DASHBOARD_PATH = config("DASHBOARD_PATH", default="/dashboard/")
 
 SQLALCHEMY_DATABASE_URL = config(
-    "SQLALCHEMY_DATABASE_URL", default="sqlite:///db.sqlite3"
+    "SQLALCHEMY_DATABASE_URL", default="sqlite:////var/lib/marzneshin/db.sqlite3"
 )
 SQLALCHEMY_CONNECTION_POOL_SIZE = config(
     "SQLALCHEMY_CONNECTION_POOL_SIZE", default=10, cast=int

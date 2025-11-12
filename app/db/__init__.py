@@ -29,16 +29,36 @@ from .models import JWT, System, User  # noqa
 
 class GetDB:  # Context Manager
     def __init__(self):
-        self.db = SessionLocal()
+        self.db = None
 
     def __enter__(self):
+        self.db = SessionLocal()
         return self.db
 
-    def __exit__(self, _, exc_value, traceback):
-        if isinstance(exc_value, SQLAlchemyError):
-            self.db.rollback()  # rollback on exception
-
-        self.db.close()
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            if exc_type is not None or isinstance(exc_value, SQLAlchemyError):
+                # Rollback on any exception
+                if self.db:
+                    self.db.rollback()
+            # Note: No automatic commit - let the caller control commits
+        except Exception:
+            # If rollback fails, still try to close
+            if self.db:
+                try:
+                    self.db.rollback()
+                except Exception:
+                    pass
+        finally:
+            # Always close and cleanup the session
+            if self.db:
+                try:
+                    self.db.expire_all()  # Expire all objects
+                    self.db.close()  # Close the session
+                except Exception:
+                    pass
+                finally:
+                    self.db = None  # Clear reference
 
 
 __all__ = [

@@ -5,14 +5,24 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db import crud, User, GetDB
+from app.db.base import SessionLocal
 from app.db.models import Service
 from app.models.admin import Admin, oauth2_scheme
 from app.utils.auth import get_admin_payload
 
 
 def get_db():
-    with GetDB() as db:
+    """FastAPI dependency for database session with guaranteed cleanup"""
+    db = SessionLocal()
+    try:
         yield db
+        db.commit()  # Commit on success
+    except Exception:
+        db.rollback()  # Rollback on error
+        raise
+    finally:
+        db.expire_all()  # Expire all cached objects
+        db.close()  # Always close the session
 
 
 def get_admin(
